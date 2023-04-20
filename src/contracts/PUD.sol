@@ -11,7 +11,7 @@ contract PUD is IPUD, ERC20 {
     address private s_treasurer;
 
     modifier requireBookkeeperOrTreasurer() {
-        require(msg.sender == s_bookkeeper || msg.sender == s_treasurer, "PUD: require bookkeeper or treasurer");
+        require(_msgSender() == s_bookkeeper || _msgSender() == s_treasurer, "PUD: require bookkeeper or treasurer");
         _;
     }
 
@@ -28,10 +28,10 @@ contract PUD is IPUD, ERC20 {
     }
 
     function mint(uint256 amount) external requireBookkeeperOrTreasurer {
-        _mint(msg.sender, amount);
+        _mint(_msgSender(), amount);
     }
 
     function burn(uint256 amount) external requireBookkeeperOrTreasurer {
-        _burn(msg.sender, amount);
+        _burn(_msgSender(), amount);
     }
 }
