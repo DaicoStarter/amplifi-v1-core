@@ -188,7 +188,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
         uint256, /* tokenId */
         bytes calldata /* data */
     ) external view validateToken(_msgSender(), TokenType.NonFungible) returns (bytes4 identifier) {
-        return this.onERC721Received.selector;
+        identifier = this.onERC721Received.selector;
     }
 
     function _debitFungibleToken(Position storage s_position, address token) private returns (uint256 amount) {
