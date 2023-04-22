@@ -13,10 +13,10 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
     address private s_bookkeeper;
     address private s_pud;
     address private s_treasurer;
-    uint256 private s_interestRateDx18;
-    uint256 private s_penaltyRateDx18;
+    uint256 private s_interestRateUDx18;
+    uint256 private s_penaltyRateUDx18;
     address[] private s_distributionAddresses;
-    uint256[] private s_distributionRatesDx18;
+    uint256[] private s_distributionRatesUDx18;
     AccelerationMode private s_accelerationMode;
     RepaymentMode private s_repaymentMode;
     mapping(address => TokenInfo) private s_tokenInfos;
@@ -35,30 +35,30 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
         s_treasurer = treasurer;
     }
 
-    function setInterestRate(uint256 interestRateDx18) external requireSteward {
-        s_interestRateDx18 = interestRateDx18;
+    function setInterestRate(uint256 interestRateUDx18) external requireSteward {
+        s_interestRateUDx18 = interestRateUDx18;
     }
 
-    function setPenaltyRate(uint256 penaltyRateDx18) external requireSteward {
-        s_penaltyRateDx18 = penaltyRateDx18;
+    function setPenaltyRate(uint256 penaltyRateUDx18) external requireSteward {
+        s_penaltyRateUDx18 = penaltyRateUDx18;
     }
 
-    function setDistributionRates(address[] calldata distributionAddresses, uint256[] calldata distributionRatesDx18)
+    function setDistributionRates(address[] calldata distributionAddresses, uint256[] calldata distributionRatesUDx18)
         external
         requireSteward
     {
         require(
-            distributionAddresses.length == distributionRatesDx18.length,
+            distributionAddresses.length == distributionRatesUDx18.length,
             "Registrar: addresses and rates are different in length"
         );
-        uint256 totalDistributionRateDx18;
-        for (uint256 i = 0; i < distributionRatesDx18.length; i++) {
-            totalDistributionRateDx18 += distributionRatesDx18[i];
+        uint256 totalDistributionRateUDx18;
+        for (uint256 i = 0; i < distributionRatesUDx18.length; i++) {
+            totalDistributionRateUDx18 += distributionRatesUDx18[i];
         }
-        require(totalDistributionRateDx18 == uUNIT, "Registrar: distribution rates must add up to 1");
+        require(totalDistributionRateUDx18 == uUNIT, "Registrar: distribution rates must add up to 1");
 
         s_distributionAddresses = distributionAddresses;
-        s_distributionRatesDx18 = distributionRatesDx18;
+        s_distributionRatesUDx18 = distributionRatesUDx18;
     }
 
     function setAccelerationMode(AccelerationMode accelerationMode) external requireSteward {
@@ -70,7 +70,7 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
     }
 
     function setTokenInfo(address token, TokenInfo calldata tokenInfo) external requireSteward {
-        require(tokenInfo.liquidationRatioDx18 < uUNIT, "Registrar: liquidation ratio must be [0, 1)");
+        require(tokenInfo.liquidationRatioUDx18 < uUNIT, "Registrar: liquidation ratio must be [0, 1)");
 
         s_tokenInfos[token] = tokenInfo;
     }
@@ -87,21 +87,21 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
         treasurer = s_treasurer;
     }
 
-    function getInterestRate() external view returns (uint256 interestRateDx18) {
-        interestRateDx18 = s_interestRateDx18;
+    function getInterestRate() external view returns (uint256 interestRateUDx18) {
+        interestRateUDx18 = s_interestRateUDx18;
     }
 
-    function getPenaltyRate() external view returns (uint256 penaltyRateDx18) {
-        penaltyRateDx18 = s_penaltyRateDx18;
+    function getPenaltyRate() external view returns (uint256 penaltyRateUDx18) {
+        penaltyRateUDx18 = s_penaltyRateUDx18;
     }
 
     function getDistributionRates()
         external
         view
-        returns (address[] memory distributionAddresses, uint256[] memory distributionRatesDx18)
+        returns (address[] memory distributionAddresses, uint256[] memory distributionRatesUDx18)
     {
         distributionAddresses = s_distributionAddresses;
-        distributionRatesDx18 = s_distributionRatesDx18;
+        distributionRatesUDx18 = s_distributionRatesUDx18;
     }
 
     function getAccelerationMode() external view returns (AccelerationMode accelerationMode) {
