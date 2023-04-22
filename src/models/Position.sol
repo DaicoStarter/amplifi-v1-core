@@ -6,7 +6,7 @@ struct Position {
     uint256 realDebt;
     uint256 nominalDebt;
     address[] fungibleTokens;
-    mapping(address => uint256) fungibleBalances;
+    mapping(address => uint256) fungibleTokenBalances;
     address[] nonFungibleTokens;
     mapping(address => uint256[]) nonFungibleTokenIds;
 }

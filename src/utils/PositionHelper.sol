@@ -13,12 +13,12 @@ library PositionHelper {
     using PositionHelper for Position;
 
     function addFungibleToken(Position storage s_self, address token, uint256 amount) internal {
-        uint256 oldBalance = s_self.fungibleBalances[token];
+        uint256 oldBalance = s_self.fungibleTokenBalances[token];
 
         if (oldBalance == 0) {
             s_self.fungibleTokens.push(token);
         }
-        s_self.fungibleBalances[token] = oldBalance + amount;
+        s_self.fungibleTokenBalances[token] = oldBalance + amount;
     }
 
     function addNonFungibleToken(Position storage s_self, address token, uint256 tokenId) internal {
@@ -38,9 +38,9 @@ library PositionHelper {
     }
 
     function removeFungibleToken(Position storage s_self, address token, uint256 amount) internal {
-        uint256 newBalance = s_self.fungibleBalances[token] - amount;
+        uint256 newBalance = s_self.fungibleTokenBalances[token] - amount;
 
-        s_self.fungibleBalances[token] = newBalance;
+        s_self.fungibleTokenBalances[token] = newBalance;
         if (newBalance == 0) {
             s_self.fungibleTokens.remove(token);
         }
