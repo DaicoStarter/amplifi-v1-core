@@ -12,7 +12,9 @@ import {mulDiv18} from "prb-math/common.sol";
 import {UD60x18, uUNIT, UNIT, add, mul, powu, wrap, unwrap} from "prb-math/UD60x18.sol";
 import {IBookkeeper} from "amplifi-v1-common/interfaces/IBookkeeper.sol";
 import {IRegistrar} from "amplifi-v1-common/interfaces/IRegistrar.sol";
+import {IPUD} from "amplifi-v1-common/interfaces/IPUD.sol";
 import {ITreasurer} from "amplifi-v1-common/interfaces/ITreasurer.sol";
+import {IBorrowCallback} from "amplifi-v1-common/interfaces/callbacks/IBorrowCallback.sol";
 import {IWithdrawFungibleTokenCallback} from "amplifi-v1-common/interfaces/callbacks/IWithdrawFungibleTokenCallback.sol";
 import {IWithdrawFungibleTokensCallback} from
     "amplifi-v1-common/interfaces/callbacks/IWithdrawFungibleTokensCallback.sol";
@@ -33,6 +35,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
     uint256 private s_lastBlockTimestamp;
     uint256 private s_interestCumulativeUDx18;
 
+    uint256 private s_totalRealDebt;
     uint256 private s_lastPositionId;
     mapping(uint256 => Position) private s_positions;
     mapping(address => uint256) private s_totalFungibleTokenBalances;
@@ -227,7 +230,19 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
         validatePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
     {
-        //TODO:
+        address pud = s_pud;
+        Position storage s_position = s_positions[positionId];
+        require(amount > 0, "Bookkeeper: borrow amount must be greater than zero");
+
+        IPUD(pud).mint(amount);
+        s_totalRealDebt += s_position.addDebt(amount, _updateInterestCumulative());
+        _debitFungibleToken(s_position, pud) >= amount;
+
+        if (Address.isContract(_msgSender())) {
+            IBorrowCallback(_msgSender()).borrowCallback(positionId, amount, data);
+        }
+
+        emit Borrow(_msgSender(), positionId, amount);
     }
 
     function repay(uint256 positionId, uint256 amount)
@@ -235,7 +250,20 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
         validatePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
     {
-        //TODO:
+        address pud = s_pud;
+        Position storage s_position = s_positions[positionId];
+        require(amount > 0, "Bookkeeper: repay amount must be greater than zero");
+
+        _creditFungibleToken(s_position, pud, amount);
+        (uint256 realDebt, uint256 interest) =
+            s_position.removeDebt(amount, _getInterestCumulative(), s_REGISTRAR.getRepaymentMode());
+        s_totalRealDebt -= realDebt;
+        IPUD(pud).burn(amount - interest);
+        if (interest > 0) {
+            _distribute(interest, s_position.originator);
+        }
+
+        emit Repay(_msgSender(), positionId, amount - interest, interest);
     }
 
     function liquidate(uint256 positionId, address recipient, bytes calldata data)
@@ -293,6 +321,21 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
 
         s_position.removeFungibleToken(token, amount);
         s_totalFungibleTokenBalances[token] -= amount;
+    }
+
+    function _distribute(uint256 amount, address originator) private {
+        address pud = s_pud;
+        uint256 totalDistributedAmount;
+        (address[] memory addresses, uint256[] memory ratesUDx18) = s_REGISTRAR.getDistributionRates();
+
+        for (uint256 i = 0; i < addresses.length; i++) {
+            if (addresses[i] != address(0)) {
+                uint256 amountToDistribute = mulDiv18(amount, ratesUDx18[i]);
+                IERC20(pud).safeTransfer(addresses[i], amountToDistribute);
+                totalDistributedAmount += amountToDistribute;
+            }
+        }
+        IERC20(pud).safeTransfer(originator, amount - totalDistributedAmount);
     }
 
     function _updateInterestCumulative() private returns (uint256 interestCumulativeUDx18) {
