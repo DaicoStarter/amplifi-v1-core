@@ -2,7 +2,11 @@
 pragma solidity =0.8.19;
 
 import {SafeERC20, IERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ERC721, IERC721} from "openzeppelin-contracts/contracts/token/ERC721/ERC721.sol";
+import {
+    ERC721Enumerable,
+    ERC721,
+    IERC721
+} from "openzeppelin-contracts/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import {Address} from "openzeppelin-contracts/contracts/utils/Address.sol";
 import {mulDiv18} from "prb-math/common.sol";
 import {UD60x18, uUNIT, UNIT, add, mul, powu, wrap, unwrap} from "prb-math/UD60x18.sol";
@@ -19,7 +23,7 @@ import {TokenInfo, TokenType, TokenSubtype} from "amplifi-v1-common/models/Token
 import {Addressable} from "amplifi-v1-common/utils/Addressable.sol";
 import {PositionHelper, Position} from "../utils/PositionHelper.sol";
 
-contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
+contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
     using PositionHelper for Position;
     using SafeERC20 for IERC20;
 
