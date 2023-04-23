@@ -23,9 +23,10 @@ import {IWithdrawNonFungibleTokenCallback} from
 import {AccelerationMode} from "amplifi-v1-common/models/AccelerationMode.sol";
 import {TokenInfo, TokenType, TokenSubtype} from "amplifi-v1-common/models/TokenInfo.sol";
 import {Addressable} from "amplifi-v1-common/utils/Addressable.sol";
+import {Lockable} from "amplifi-v1-common/utils/Lockable.sol";
 import {PositionHelper, Position} from "../utils/PositionHelper.sol";
 
-contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
+contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     using PositionHelper for Position;
     using SafeERC20 for IERC20;
 
@@ -80,6 +81,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
     function initialize() external {
         require(s_pud == address(0) && s_treasurer == address(0), "Bookkeeper: already initialized");
 
+        initLock();
         s_pud = s_REGISTRAR.getPUD();
         s_treasurer = s_REGISTRAR.getTreasurer();
         s_lastBlockTimestamp = block.timestamp;
@@ -145,6 +147,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
         bytes calldata data
     )
         external
+        lock
         ensurePosition(positionId)
         validatePosition(positionId)
         validateToken(token, TokenType.Fungible)
@@ -171,6 +174,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
         bytes calldata data
     )
         external
+        lock
         ensurePosition(positionId)
         validatePosition(positionId)
         validateTokens(tokens, TokenType.Fungible)
@@ -202,6 +206,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
         bytes calldata data
     )
         external
+        lock
         ensurePosition(positionId)
         validatePosition(positionId)
         validateToken(token, TokenType.NonFungible)
@@ -226,6 +231,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
 
     function borrow(uint256 positionId, uint256 amount, bytes calldata data)
         external
+        lock
         ensurePosition(positionId)
         validatePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
@@ -247,6 +253,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
 
     function repay(uint256 positionId, uint256 amount)
         external
+        lock
         validatePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
     {
@@ -268,6 +275,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721Enumerable {
 
     function liquidate(uint256 positionId, address recipient, bytes calldata data)
         external
+        lock
         validatePosition(positionId)
         requireNonZeroAddress(recipient)
     {
