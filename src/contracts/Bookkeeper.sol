@@ -70,6 +70,22 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
         s_treasurer = s_REGISTRAR.getTreasurer();
     }
 
+    function mint(address originator, address recipient)
+        external
+        requireOwnerOrOperator(recipient)
+        returns (uint256 positionId)
+    {
+        //TODO:
+    }
+
+    function burn(uint256 positionId)
+        external
+        validatePosition(positionId)
+        requireOwnerOrOperator(ownerOf(positionId))
+    {
+        //TODO:
+    }
+
     function depositFungibleToken(uint256 positionId, address token)
         external
         validatePosition(positionId)
@@ -182,6 +198,31 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
         emit WithdrawNonFungibleToken(_msgSender(), positionId, token, tokenId, recipient);
     }
 
+    function borrow(uint256 positionId, uint256 amount, bytes calldata data)
+        external
+        ensurePosition(positionId)
+        validatePosition(positionId)
+        requireOwnerOrOperator(ownerOf(positionId))
+    {
+        //TODO:
+    }
+
+    function repay(uint256 positionId, uint256 amount)
+        external
+        validatePosition(positionId)
+        requireOwnerOrOperator(ownerOf(positionId))
+    {
+        //TODO:
+    }
+
+    function liquidate(uint256 positionId, address recipient, bytes calldata data)
+        external
+        validatePosition(positionId)
+        requireNonZeroAddress(recipient)
+    {
+        //TODO:
+    }
+
     function onERC721Received(
         address, /* operator */
         address, /* from */
@@ -189,6 +230,30 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
         bytes calldata /* data */
     ) external view validateToken(_msgSender(), TokenType.NonFungible) returns (bytes4 identifier) {
         identifier = this.onERC721Received.selector;
+    }
+
+    function getValueOf(uint256 positionId) external view returns (uint256 value) {
+        //TODO:
+    }
+
+    function getDebtOf(uint256 positionId) external view returns (uint256 debt) {
+        //TODO:
+    }
+
+    function getTotalDebt() external view returns (uint256 totalDebt) {
+        //TODO:
+    }
+
+    function getFungibleTokenBalanceOf(uint256 positionId, address token) external view returns (uint256 balance) {
+        //TODO:
+    }
+
+    function getTotalFungibleTokenBalance(address token) external view returns (uint256 balance) {
+        //TODO:
+    }
+
+    function getNonFungibleTokenPosition(address token, uint256 tokenId) external view returns (uint256 positionId) {
+        //TODO:
     }
 
     function _debitFungibleToken(Position storage s_position, address token) private returns (uint256 amount) {
@@ -201,7 +266,7 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
     }
 
     function _creditFungibleToken(Position storage s_position, address token, uint256 amount) private {
-        require(s_position.fungibleBalances[token] >= amount, "Bookkeeper: insufficient token balance");
+        require(s_position.fungibleTokenBalances[token] >= amount, "Bookkeeper: insufficient token balance");
 
         s_position.removeFungibleToken(token, amount);
         s_totalFungibleTokenBalances[token] -= amount;
