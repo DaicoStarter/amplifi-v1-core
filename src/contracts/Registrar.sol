@@ -10,6 +10,7 @@ import {Addressable} from "amplifi-v1-common/utils/Addressable.sol";
 import {Stewardable} from "amplifi-v1-common/utils/Stewardable.sol";
 
 contract Registrar is IRegistrar, Addressable, Stewardable {
+    address private immutable s_PRICE_PEG;
     address private s_bookkeeper;
     address private s_pud;
     address private s_treasurer;
@@ -21,7 +22,9 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
     RepaymentMode private s_repaymentMode;
     mapping(address => TokenInfo) private s_tokenInfos;
 
-    constructor(address steward) Stewardable(steward) {}
+    constructor(address steward, address pricePeg) Stewardable(steward) {
+        s_PRICE_PEG = pricePeg;
+    }
 
     function setBookkeeper(address bookkeeper) external requireSender(bookkeeper) requireZeroAddress(s_bookkeeper) {
         s_bookkeeper = bookkeeper;
@@ -73,6 +76,10 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
         require(tokenInfo.liquidationRatioUDx18 < uUNIT, "Registrar: liquidation ratio must be [0, 1)");
 
         s_tokenInfos[token] = tokenInfo;
+    }
+
+    function getPricePeg() external view returns (address pricePeg) {
+        pricePeg = s_PRICE_PEG;
     }
 
     function getBookkeeper() external view returns (address bookkeeper) {

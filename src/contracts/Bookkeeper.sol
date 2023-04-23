@@ -4,13 +4,17 @@ pragma solidity =0.8.19;
 import {SafeERC20, IERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ERC721, IERC721} from "openzeppelin-contracts/contracts/token/ERC721/ERC721.sol";
 import {Address} from "openzeppelin-contracts/contracts/utils/Address.sol";
+import {mulDiv18} from "prb-math/common.sol";
+import {UD60x18, uUNIT, UNIT, add, mul, powu, wrap, unwrap} from "prb-math/UD60x18.sol";
 import {IBookkeeper} from "amplifi-v1-common/interfaces/IBookkeeper.sol";
 import {IRegistrar} from "amplifi-v1-common/interfaces/IRegistrar.sol";
+import {ITreasurer} from "amplifi-v1-common/interfaces/ITreasurer.sol";
 import {IWithdrawFungibleTokenCallback} from "amplifi-v1-common/interfaces/callbacks/IWithdrawFungibleTokenCallback.sol";
 import {IWithdrawFungibleTokensCallback} from
     "amplifi-v1-common/interfaces/callbacks/IWithdrawFungibleTokensCallback.sol";
 import {IWithdrawNonFungibleTokenCallback} from
     "amplifi-v1-common/interfaces/callbacks/IWithdrawNonFungibleTokenCallback.sol";
+import {AccelerationMode} from "amplifi-v1-common/models/AccelerationMode.sol";
 import {TokenInfo, TokenType, TokenSubtype} from "amplifi-v1-common/models/TokenInfo.sol";
 import {Addressable} from "amplifi-v1-common/utils/Addressable.sol";
 import {PositionHelper, Position} from "../utils/PositionHelper.sol";
@@ -22,7 +26,10 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
     IRegistrar private immutable s_REGISTRAR;
     address private s_pud;
     address private s_treasurer;
+    uint256 private s_lastBlockTimestamp;
+    uint256 private s_interestCumulativeUDx18;
 
+    uint256 private s_lastPositionId;
     mapping(uint256 => Position) private s_positions;
     mapping(address => uint256) private s_totalFungibleTokenBalances;
     mapping(address => mapping(uint256 => uint256)) private s_nonFungibleTokenPositions;
@@ -68,6 +75,8 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
 
         s_pud = s_REGISTRAR.getPUD();
         s_treasurer = s_REGISTRAR.getTreasurer();
+        s_lastBlockTimestamp = block.timestamp;
+        s_interestCumulativeUDx18 = uUNIT;
     }
 
     function mint(address originator, address recipient)
@@ -75,7 +84,9 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
         requireOwnerOrOperator(recipient)
         returns (uint256 positionId)
     {
-        //TODO:
+        positionId = ++s_lastPositionId;
+        _safeMint(recipient, positionId);
+        s_positions[positionId].originator = originator;
     }
 
     function burn(uint256 positionId)
@@ -83,7 +94,15 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
         validatePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
     {
-        //TODO:
+        Position storage s_position = s_positions[positionId];
+        require(
+            s_position.fungibleTokens.length == 0 && s_position.nonFungibleTokens.length == 0,
+            "Bookkeeper: cannot burn position with asset"
+        );
+        require(s_position.realDebt == 0 && s_position.nominalDebt == 0, "Bookkeeper: cannot burn position with debt");
+
+        delete s_positions[positionId];
+        _burn(positionId);
     }
 
     function depositFungibleToken(uint256 positionId, address token)
@@ -270,5 +289,41 @@ contract Bookkeeper is IBookkeeper, Addressable, ERC721 {
 
         s_position.removeFungibleToken(token, amount);
         s_totalFungibleTokenBalances[token] -= amount;
+    }
+
+    function _updateInterestCumulative() private returns (uint256 interestCumulativeUDx18) {
+        interestCumulativeUDx18 = _getInterestCumulative();
+        s_interestCumulativeUDx18 = interestCumulativeUDx18;
+        s_lastBlockTimestamp = block.timestamp;
+    }
+
+    function _getInterestCumulative() private view returns (uint256 interestCumulativeUDx18) {
+        uint256 timeElapsed = block.timestamp - s_lastBlockTimestamp;
+
+        if (timeElapsed == 0) {
+            interestCumulativeUDx18 = s_interestCumulativeUDx18;
+        } else {
+            IRegistrar registrar = s_REGISTRAR;
+            UD60x18 effectiveRate;
+            UD60x18 interestRate = wrap(registrar.getInterestRate());
+            AccelerationMode accelerationMode = registrar.getAccelerationMode();
+
+            if (accelerationMode == AccelerationMode.None) {
+                effectiveRate = add(UNIT, interestRate);
+            } else if (accelerationMode == AccelerationMode.Linear) {
+                uint256 accelerator = ITreasurer(s_treasurer).getValueOfFungibleToken(registrar.getPricePeg(), uUNIT);
+                effectiveRate = add(UNIT, mul(interestRate, wrap(accelerator)));
+            } else if (accelerationMode == AccelerationMode.Quadratic) {
+                uint256 accelerator = ITreasurer(s_treasurer).getValueOfFungibleToken(registrar.getPricePeg(), uUNIT);
+                effectiveRate = add(UNIT, mul(interestRate, powu(wrap(accelerator), 2)));
+            } else if (accelerationMode == AccelerationMode.Cubic) {
+                uint256 accelerator = ITreasurer(s_treasurer).getValueOfFungibleToken(registrar.getPricePeg(), uUNIT);
+                effectiveRate = add(UNIT, mul(interestRate, powu(wrap(accelerator), 3)));
+            } else {
+                revert("Bookkeeper: invalid acceleration mode");
+            }
+
+            interestCumulativeUDx18 = mulDiv18(s_interestCumulativeUDx18, unwrap(powu(effectiveRate, timeElapsed)));
+        }
     }
 }
