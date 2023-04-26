@@ -44,7 +44,11 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
 
     modifier ensurePosition(uint256 positionId) {
         _;
-        //TODO:
+        uint256 debt = getDebtOf(positionId);
+        if (s_positions[positionId].fungibleTokenBalances[s_pud] < debt) {
+            (uint256 value, uint256 margin) = getAppraisalOf(positionId);
+            require(value >= debt + margin, "Bookkeeper: insufficient equity");
+        }
     }
 
     modifier requireOwnerOrOperator(address owner) {
@@ -296,16 +300,35 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         totalDebt = mulDiv18(s_totalRealDebt, _getInterestCumulative());
     }
 
-    function getDebtOf(uint256 positionId) external view returns (uint256 debt) {
+    function getDebtOf(uint256 positionId) public view returns (uint256 debt) {
         debt = mulDiv18(s_positions[positionId].realDebt, _getInterestCumulative());
     }
 
-    function getAppraisalOf(uint256 positionId) external view returns (uint256 value, uint256 margin) {
-        //TODO:
+    function getAppraisalOf(uint256 positionId) public view returns (uint256 value, uint256 margin) {
+        (address[] memory fungibleTokens, uint256[] memory fungibleTokenBalances) = getFungibleTokensOf(positionId);
+        (uint256[] memory fungibleTokenValues, uint256[] memory fungibleTokenMargins) =
+            ITreasurer(s_treasurer).getAppraisalOfFungibleTokens(fungibleTokens, fungibleTokenBalances);
+
+        for (uint256 i = 0; i < fungibleTokenValues.length; i++) {
+            value += fungibleTokenValues[i];
+            margin += fungibleTokenMargins[i];
+        }
+
+        (address[] memory nonFungibleTokens, uint256[] memory nonFungibleTokenIds) = getNonFungibleTokensOf(positionId);
+
+        for (uint256 i = 0; i < nonFungibleTokens.length; i++) {
+            (, uint256[] memory nonFungibleTokenValues, uint256[] memory nonFungibleTokenMargins) =
+                ITreasurer(s_treasurer).getAppraisalOfNonFungibleToken(nonFungibleTokens[i], nonFungibleTokenIds[i]);
+
+            for (uint256 j = 0; j < nonFungibleTokenValues.length; j++) {
+                value += nonFungibleTokenValues[j];
+                margin += nonFungibleTokenMargins[j];
+            }
+        }
     }
 
     function getFungibleTokensOf(uint256 positionId)
-        external
+        public
         view
         returns (address[] memory tokens, uint256[] memory balances)
     {
@@ -319,7 +342,7 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     }
 
     function getNonFungibleTokensOf(uint256 positionId)
-        external
+        public
         view
         returns (address[] memory tokens, uint256[] memory tokenIds)
     {
