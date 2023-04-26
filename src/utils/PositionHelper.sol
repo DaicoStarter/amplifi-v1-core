@@ -10,7 +10,6 @@ import {Position} from "../models/Position.sol";
 library PositionHelper {
     using ArrayHelper for address[];
     using ArrayHelper for uint256[];
-    using PositionHelper for Position;
 
     function addFungibleToken(Position storage s_self, address token, uint256 amount) internal {
         uint256 oldBalance = s_self.fungibleTokenBalances[token];
@@ -61,7 +60,7 @@ library PositionHelper {
     ) internal returns (uint256 realAmount, uint256 interestAmount) {
         uint256 realDebt = s_self.realDebt;
         uint256 nominalDebt = s_self.nominalDebt;
-        uint256 effectiveDebt = s_self.getEffectiveDebt(interestCumulativeUDx18);
+        uint256 effectiveDebt = mulDiv18(s_self.realDebt, interestCumulativeUDx18);
         uint256 interest = effectiveDebt > nominalDebt ? effectiveDebt - nominalDebt : 0;
         require(nominalAmount <= effectiveDebt, "PositionHelper: excessive repayment");
 
@@ -95,13 +94,5 @@ library PositionHelper {
                 revert("PositionHelper: invalid repayment mode");
             }
         }
-    }
-
-    function getEffectiveDebt(Position storage s_self, uint256 interestCumulativeUDx18)
-        internal
-        view
-        returns (uint256 effectiveDebt)
-    {
-        effectiveDebt = mulDiv18(s_self.realDebt, interestCumulativeUDx18);
     }
 }

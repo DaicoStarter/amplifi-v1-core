@@ -43,8 +43,8 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     mapping(address => mapping(uint256 => uint256)) private s_nonFungibleTokenPositions;
 
     modifier ensurePosition(uint256 positionId) {
-        //TODO:
         _;
+        //TODO:
     }
 
     modifier requireOwnerOrOperator(address owner) {
@@ -82,8 +82,9 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         require(s_pud == address(0) && s_treasurer == address(0), "Bookkeeper: already initialized");
 
         initLock();
-        s_pud = s_REGISTRAR.getPUD();
-        s_treasurer = s_REGISTRAR.getTreasurer();
+        IRegistrar registrar = s_REGISTRAR;
+        s_pud = registrar.getPUD();
+        s_treasurer = registrar.getTreasurer();
         s_lastBlockTimestamp = block.timestamp;
         s_interestCumulativeUDx18 = uUNIT;
     }
@@ -291,28 +292,57 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         identifier = this.onERC721Received.selector;
     }
 
-    function getValueOf(uint256 positionId) external view returns (uint256 value) {
-        //TODO:
+    function getTotalDebt() external view returns (uint256 totalDebt) {
+        totalDebt = mulDiv18(s_totalRealDebt, _getInterestCumulative());
     }
 
     function getDebtOf(uint256 positionId) external view returns (uint256 debt) {
+        debt = mulDiv18(s_positions[positionId].realDebt, _getInterestCumulative());
+    }
+
+    function getAppraisalOf(uint256 positionId) external view returns (uint256 value, uint256 margin) {
         //TODO:
     }
 
-    function getTotalDebt() external view returns (uint256 totalDebt) {
-        //TODO:
+    function getFungibleTokensOf(uint256 positionId)
+        external
+        view
+        returns (address[] memory tokens, uint256[] memory balances)
+    {
+        Position storage s_position = s_positions[positionId];
+        tokens = s_position.fungibleTokens;
+        balances = new uint256[](tokens.length);
+
+        for (uint256 i = 0; i < tokens.length; i++) {
+            balances[i] = s_position.fungibleTokenBalances[tokens[i]];
+        }
     }
 
-    function getFungibleTokenBalanceOf(uint256 positionId, address token) external view returns (uint256 balance) {
-        //TODO:
-    }
+    function getNonFungibleTokensOf(uint256 positionId)
+        external
+        view
+        returns (address[] memory tokens, uint256[] memory tokenIds)
+    {
+        uint256 size;
+        Position storage s_position = s_positions[positionId];
+        address[] memory _tokens = s_position.nonFungibleTokens;
 
-    function getTotalFungibleTokenBalance(address token) external view returns (uint256 balance) {
-        //TODO:
-    }
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            size += s_position.nonFungibleTokenIds[_tokens[i]].length;
+        }
 
-    function getNonFungibleTokenPosition(address token, uint256 tokenId) external view returns (uint256 positionId) {
-        //TODO:
+        tokens = new address[](size);
+        tokenIds = new uint256[](size);
+        size = 0;
+
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            uint256[] memory _tokenIds = s_position.nonFungibleTokenIds[_tokens[i]];
+
+            for (uint256 j = 0; j < _tokenIds.length; j++) {
+                tokens[size] = _tokens[i];
+                tokenIds[size++] = _tokenIds[j];
+            }
+        }
     }
 
     function _debitFungibleToken(Position storage s_position, address token) private returns (uint256 amount) {
@@ -365,17 +395,19 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
 
             if (accelerationMode == AccelerationMode.None) {
                 effectiveRate = add(UNIT, interestRate);
-            } else if (accelerationMode == AccelerationMode.Linear) {
-                uint256 accelerator = ITreasurer(s_treasurer).getValueOfFungibleToken(registrar.getPricePeg(), uUNIT);
-                effectiveRate = add(UNIT, mul(interestRate, wrap(accelerator)));
-            } else if (accelerationMode == AccelerationMode.Quadratic) {
-                uint256 accelerator = ITreasurer(s_treasurer).getValueOfFungibleToken(registrar.getPricePeg(), uUNIT);
-                effectiveRate = add(UNIT, mul(interestRate, powu(wrap(accelerator), 2)));
-            } else if (accelerationMode == AccelerationMode.Cubic) {
-                uint256 accelerator = ITreasurer(s_treasurer).getValueOfFungibleToken(registrar.getPricePeg(), uUNIT);
-                effectiveRate = add(UNIT, mul(interestRate, powu(wrap(accelerator), 3)));
             } else {
-                revert("Bookkeeper: invalid acceleration mode");
+                (uint256 accelerator,) =
+                    ITreasurer(s_treasurer).getAppraisalOfFungibleToken(registrar.getPricePeg(), uUNIT);
+
+                if (accelerationMode == AccelerationMode.Linear) {
+                    effectiveRate = add(UNIT, mul(interestRate, wrap(accelerator)));
+                } else if (accelerationMode == AccelerationMode.Quadratic) {
+                    effectiveRate = add(UNIT, mul(interestRate, powu(wrap(accelerator), 2)));
+                } else if (accelerationMode == AccelerationMode.Cubic) {
+                    effectiveRate = add(UNIT, mul(interestRate, powu(wrap(accelerator), 3)));
+                } else {
+                    revert("Bookkeeper: invalid acceleration mode");
+                }
             }
 
             interestCumulativeUDx18 = mulDiv18(s_interestCumulativeUDx18, unwrap(powu(effectiveRate, timeElapsed)));
