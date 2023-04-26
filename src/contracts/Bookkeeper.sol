@@ -47,7 +47,7 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         uint256 debt = getDebtOf(positionId);
         if (s_positions[positionId].fungibleTokenBalances[s_pud] < debt) {
             (uint256 value, uint256 margin) = getAppraisalOf(positionId);
-            require(value >= debt + margin, "Bookkeeper: insufficient equity");
+            require(value >= debt + margin, "Bookkeeper: equity less than margin requirement");
         }
     }
 
@@ -272,7 +272,7 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         s_totalRealDebt -= realDebt;
         IPUD(pud).burn(amount - interest);
         if (interest > 0) {
-            _distribute(interest, s_position.originator);
+            _distributeInterest(interest, s_position.originator);
         }
 
         emit Repay(_msgSender(), positionId, amount - interest, interest);
@@ -384,7 +384,7 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         s_totalFungibleTokenBalances[token] -= amount;
     }
 
-    function _distribute(uint256 amount, address originator) private {
+    function _distributeInterest(uint256 amount, address originator) private {
         address pud = s_pud;
         uint256 totalDistributedAmount;
         (address[] memory addresses, uint256[] memory ratesUDx18) = s_REGISTRAR.getDistributionRates();
