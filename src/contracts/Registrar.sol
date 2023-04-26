@@ -73,7 +73,7 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
     }
 
     function setTokenInfo(address token, TokenInfo calldata tokenInfo) external requireSteward {
-        require(tokenInfo.liquidationRatioUDx18 < uUNIT, "Registrar: liquidation ratio must be [0, 1)");
+        require(tokenInfo.marginRatioUDx18 < uUNIT, "Registrar: margin ratio must be [0, 1)");
 
         s_tokenInfos[token] = tokenInfo;
     }
