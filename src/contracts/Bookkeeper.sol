@@ -8,20 +8,20 @@ import {
     IERC721
 } from "openzeppelin-contracts/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import {Address} from "openzeppelin-contracts/contracts/utils/Address.sol";
+import {Math} from "openzeppelin-contracts/contracts/utils/math/Math.sol";
 import {mulDiv18} from "prb-math/common.sol";
 import {UD60x18, uUNIT, UNIT, add, mul, powu, wrap, unwrap} from "prb-math/UD60x18.sol";
 import {IBookkeeper} from "amplifi-v1-common/interfaces/IBookkeeper.sol";
-import {IRegistrar} from "amplifi-v1-common/interfaces/IRegistrar.sol";
 import {IPUD} from "amplifi-v1-common/interfaces/IPUD.sol";
+import {IRegistrar} from "amplifi-v1-common/interfaces/IRegistrar.sol";
 import {ITreasurer} from "amplifi-v1-common/interfaces/ITreasurer.sol";
 import {IBorrowCallback} from "amplifi-v1-common/interfaces/callbacks/IBorrowCallback.sol";
-import {IWithdrawFungibleTokenCallback} from "amplifi-v1-common/interfaces/callbacks/IWithdrawFungibleTokenCallback.sol";
-import {IWithdrawFungibleTokensCallback} from
-    "amplifi-v1-common/interfaces/callbacks/IWithdrawFungibleTokensCallback.sol";
-import {IWithdrawNonFungibleTokenCallback} from
-    "amplifi-v1-common/interfaces/callbacks/IWithdrawNonFungibleTokenCallback.sol";
-import {AccelerationMode} from "amplifi-v1-common/models/AccelerationMode.sol";
-import {TokenInfo, TokenType, TokenSubtype} from "amplifi-v1-common/models/TokenInfo.sol";
+import {ILiquidateCallback} from "amplifi-v1-common/interfaces/callbacks/ILiquidateCallback.sol";
+import {IWithdrawFungibleCallback} from "amplifi-v1-common/interfaces/callbacks/IWithdrawFungibleCallback.sol";
+import {IWithdrawFungiblesCallback} from "amplifi-v1-common/interfaces/callbacks/IWithdrawFungiblesCallback.sol";
+import {IWithdrawNonFungibleCallback} from "amplifi-v1-common/interfaces/callbacks/IWithdrawNonFungibleCallback.sol";
+import {RegressionMode} from "amplifi-v1-common/models/RegressionMode.sol";
+import {TokenInfo, TokenType} from "amplifi-v1-common/models/TokenInfo.sol";
 import {Addressable} from "amplifi-v1-common/utils/Addressable.sol";
 import {Lockable} from "amplifi-v1-common/utils/Lockable.sol";
 import {PositionHelper, Position} from "../utils/PositionHelper.sol";
@@ -39,16 +39,12 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     uint256 private s_totalRealDebt;
     uint256 private s_lastPositionId;
     mapping(uint256 => Position) private s_positions;
-    mapping(address => uint256) private s_totalFungibleTokenBalances;
-    mapping(address => mapping(uint256 => uint256)) private s_nonFungibleTokenPositions;
+    mapping(address => uint256) private s_totalFungibleBalances;
+    mapping(address => mapping(uint256 => uint256)) private s_nonFungiblePositionIds;
 
-    modifier ensurePosition(uint256 positionId) {
+    modifier requirePosition(uint256 positionId) {
+        require(_exists(positionId), "Bookkeeper: position does not exist");
         _;
-        uint256 debt = getDebtOf(positionId);
-        if (s_positions[positionId].fungibleTokenBalances[s_pud] < debt) {
-            (uint256 value, uint256 margin) = getAppraisalOf(positionId);
-            require(value >= debt + margin, "Bookkeeper: equity less than margin requirement");
-        }
     }
 
     modifier requireOwnerOrOperator(address owner) {
@@ -56,19 +52,14 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         _;
     }
 
-    modifier validatePosition(uint256 positionId) {
-        require(_exists(positionId), "Bookkeeper: position does not exist");
-        _;
-    }
-
-    modifier validateToken(address token, TokenType type_) {
+    modifier requireToken(address token, TokenType type_) {
         TokenInfo memory tokenInfo = s_REGISTRAR.getTokenInfoOf(token);
         require(tokenInfo.enabled, "Bookkeeper: token is not enabled");
         require(tokenInfo.type_ == type_, "Bookkeeper: token is wrong type");
         _;
     }
 
-    modifier validateTokens(address[] calldata tokens, TokenType type_) {
+    modifier requireTokens(address[] calldata tokens, TokenType type_) {
         for (uint256 i = 0; i < tokens.length; i++) {
             TokenInfo memory tokenInfo = s_REGISTRAR.getTokenInfoOf(tokens[i]);
             require(tokenInfo.enabled, "Bookkeeper: token is not enabled");
@@ -77,15 +68,25 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         _;
     }
 
+    modifier ensurePosition(uint256 positionId) {
+        _updateInterestCumulative();
+        _;
+        uint256 debt = s_positions[positionId].getDebt(s_interestCumulativeUDx18);
+        if (s_positions[positionId].fungibleBalances[s_pud] < debt) {
+            (uint256 value, uint256 margin) = getAppraisalOf(positionId);
+            require(value >= debt + margin, "Bookkeeper: insufficient equity to meet margin requirement");
+        }
+    }
+
     constructor(string memory name, string memory symbol, address registrar) ERC721(name, symbol) {
         s_REGISTRAR = IRegistrar(registrar);
-        s_REGISTRAR.setBookkeeper(address(this));
+        IRegistrar(registrar).setBookkeeper(address(this));
     }
 
     function initialize() external {
         require(s_pud == address(0) && s_treasurer == address(0), "Bookkeeper: already initialized");
 
-        initLock();
+        initializeLock();
         IRegistrar registrar = s_REGISTRAR;
         s_pud = registrar.getPUD();
         s_treasurer = registrar.getTreasurer();
@@ -105,73 +106,64 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
 
     function burn(uint256 positionId)
         external
-        validatePosition(positionId)
+        requirePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
     {
         Position storage s_position = s_positions[positionId];
-        require(
-            s_position.fungibleTokens.length == 0 && s_position.nonFungibleTokens.length == 0,
-            "Bookkeeper: cannot burn position with asset"
-        );
-        require(s_position.realDebt == 0 && s_position.nominalDebt == 0, "Bookkeeper: cannot burn position with debt");
+        require(!s_position.hasAsset(), "Bookkeeper: cannot burn position with asset");
+        require(!s_position.hasDebt(), "Bookkeeper: cannot burn position with debt");
 
         delete s_positions[positionId];
         _burn(positionId);
     }
 
-    function depositFungibleToken(uint256 positionId, address token)
+    function depositFungible(uint256 positionId, address token)
         external
-        validatePosition(positionId)
-        validateToken(token, TokenType.Fungible)
+        requirePosition(positionId)
+        requireToken(token, TokenType.Fungible)
         returns (uint256 amount)
     {
-        amount = _debitFungibleToken(s_positions[positionId], token);
+        amount = _depositFungible(s_positions[positionId], token);
 
-        emit DepositFungibleToken(_msgSender(), positionId, token, amount);
+        emit DepositFungible(_msgSender(), positionId, token, amount);
     }
 
-    function depositNonFungibleToken(uint256 positionId, address token, uint256 tokenId)
+    function depositNonFungible(uint256 positionId, address token, uint256 tokenId)
         external
-        validatePosition(positionId)
-        validateToken(token, TokenType.NonFungible)
+        requirePosition(positionId)
+        requireToken(token, TokenType.NonFungible)
     {
         require(IERC721(token).ownerOf(tokenId) == address(this), "Bookkeeper: non-fungible token deposit not received");
-        require(s_nonFungibleTokenPositions[token][tokenId] == 0, "Bookkeeper: non-fungible token already deposited");
+        require(s_nonFungiblePositionIds[token][tokenId] == 0, "Bookkeeper: non-fungible token already deposited");
 
-        s_positions[positionId].addNonFungibleToken(token, tokenId);
-        s_nonFungibleTokenPositions[token][tokenId] = positionId;
+        s_positions[positionId].addNonFungible(token, tokenId);
+        s_nonFungiblePositionIds[token][tokenId] = positionId;
 
-        emit DepositNonFungibleToken(_msgSender(), positionId, token, tokenId);
+        emit DepositNonFungible(_msgSender(), positionId, token, tokenId);
     }
 
-    function withdrawFungibleToken(
-        uint256 positionId,
-        address token,
-        uint256 amount,
-        address recipient,
-        bytes calldata data
-    )
+    function withdrawFungible(uint256 positionId, address token, uint256 amount, address recipient, bytes calldata data)
         external
-        lock
-        ensurePosition(positionId)
-        validatePosition(positionId)
-        validateToken(token, TokenType.Fungible)
+        requireUnlocked
+        requirePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
+        requireToken(token, TokenType.Fungible)
         requireNonZeroAddress(recipient)
+        ensurePosition(positionId)
         returns (bytes memory callbackResult)
     {
-        _creditFungibleToken(s_positions[positionId], token, amount);
+        _withdrawFungible(s_positions[positionId], token, amount);
         IERC20(token).safeTransfer(recipient, amount);
         if (Address.isContract(_msgSender())) {
-            callbackResult = IWithdrawFungibleTokenCallback(_msgSender()).withdrawFungibleTokenCallback(
+            callbackResult = IWithdrawFungibleCallback(_msgSender()).withdrawFungibleCallback(
                 positionId, token, amount, recipient, data
             );
         }
 
-        emit WithdrawFungibleToken(_msgSender(), positionId, token, amount, recipient);
+        emit WithdrawFungible(_msgSender(), positionId, token, amount, recipient);
     }
 
-    function withdrawFungibleTokens(
+    function withdrawFungibles(
         uint256 positionId,
         address[] calldata tokens,
         uint256[] calldata amounts,
@@ -179,31 +171,31 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         bytes calldata data
     )
         external
-        lock
-        ensurePosition(positionId)
-        validatePosition(positionId)
-        validateTokens(tokens, TokenType.Fungible)
+        requireUnlocked
+        requirePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
+        requireTokens(tokens, TokenType.Fungible)
         requireNonZeroAddress(recipient)
+        ensurePosition(positionId)
         returns (bytes memory callbackResult)
     {
         Position storage s_position = s_positions[positionId];
-        require(tokens.length == amounts.length, "Bookkeeper: tokens and amounts are different in length");
+        require(tokens.length == amounts.length, "Bookkeeper: tokens and amounts have different length");
 
         for (uint256 i = 0; i < tokens.length; i++) {
-            _creditFungibleToken(s_position, tokens[i], amounts[i]);
+            _withdrawFungible(s_position, tokens[i], amounts[i]);
             IERC20(tokens[i]).safeTransfer(recipient, amounts[i]);
         }
         if (Address.isContract(_msgSender())) {
-            callbackResult = IWithdrawFungibleTokensCallback(_msgSender()).withdrawFungibleTokensCallback(
+            callbackResult = IWithdrawFungiblesCallback(_msgSender()).withdrawFungiblesCallback(
                 positionId, tokens, amounts, recipient, data
             );
         }
 
-        emit WithdrawFungibleTokens(_msgSender(), positionId, tokens, amounts, recipient);
+        emit WithdrawFungibles(_msgSender(), positionId, tokens, amounts, recipient);
     }
 
-    function withdrawNonFungibleToken(
+    function withdrawNonFungible(
         uint256 positionId,
         address token,
         uint256 tokenId,
@@ -211,43 +203,39 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         bytes calldata data
     )
         external
-        lock
-        ensurePosition(positionId)
-        validatePosition(positionId)
-        validateToken(token, TokenType.NonFungible)
+        requireUnlocked
+        requirePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
+        requireToken(token, TokenType.NonFungible)
         requireNonZeroAddress(recipient)
+        ensurePosition(positionId)
         returns (bytes memory callbackResult)
     {
-        require(IERC721(token).ownerOf(tokenId) == address(this), "Bookkeeper: token not present");
-        require(s_nonFungibleTokenPositions[token][tokenId] == positionId, "Bookkeeper: token not in the position");
-
-        s_positions[positionId].removeNonFungibleToken(token, tokenId);
-        delete s_nonFungibleTokenPositions[token][tokenId];
+        _withdrawNonFungible(s_positions[positionId], token, tokenId);
         IERC721(token).safeTransferFrom(address(this), recipient, tokenId);
         if (Address.isContract(_msgSender())) {
-            callbackResult = IWithdrawNonFungibleTokenCallback(_msgSender()).withdrawNonFungibleTokenCallback(
+            callbackResult = IWithdrawNonFungibleCallback(_msgSender()).withdrawNonFungibleCallback(
                 positionId, token, tokenId, recipient, data
             );
         }
 
-        emit WithdrawNonFungibleToken(_msgSender(), positionId, token, tokenId, recipient);
+        emit WithdrawNonFungible(_msgSender(), positionId, token, tokenId, recipient);
     }
 
     function borrow(uint256 positionId, uint256 amount, bytes calldata data)
         external
-        lock
-        ensurePosition(positionId)
-        validatePosition(positionId)
+        requireUnlocked
+        requirePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
+        ensurePosition(positionId)
     {
         address pud = s_pud;
         Position storage s_position = s_positions[positionId];
         require(amount > 0, "Bookkeeper: borrow amount must be greater than zero");
 
         IPUD(pud).mint(amount);
-        s_totalRealDebt += s_position.addDebt(amount, _updateInterestCumulative());
-        _debitFungibleToken(s_position, pud) >= amount;
+        s_totalRealDebt += s_position.addDebt(amount, s_interestCumulativeUDx18);
+        require(_depositFungible(s_position, pud) == amount, "Bookkeeper: borrow failed");
 
         if (Address.isContract(_msgSender())) {
             IBorrowCallback(_msgSender()).borrowCallback(positionId, amount, data);
@@ -258,21 +246,22 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
 
     function repay(uint256 positionId, uint256 amount)
         external
-        lock
-        validatePosition(positionId)
+        requirePosition(positionId)
         requireOwnerOrOperator(ownerOf(positionId))
     {
+        _updateInterestCumulative();
         address pud = s_pud;
         Position storage s_position = s_positions[positionId];
         require(amount > 0, "Bookkeeper: repay amount must be greater than zero");
 
-        _creditFungibleToken(s_position, pud, amount);
+        _withdrawFungible(s_position, pud, amount);
         (uint256 realDebt, uint256 interest) =
-            s_position.removeDebt(amount, _getInterestCumulative(), s_REGISTRAR.getRepaymentMode());
+            s_position.removeDebt(amount, s_interestCumulativeUDx18, s_REGISTRAR.getRepaymentMode());
         s_totalRealDebt -= realDebt;
         IPUD(pud).burn(amount - interest);
+
         if (interest > 0) {
-            _distributeInterest(interest, s_position.originator);
+            _allotInterest(interest, s_position.originator);
         }
 
         emit Repay(_msgSender(), positionId, amount - interest, interest);
@@ -280,160 +269,184 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
 
     function liquidate(uint256 positionId, address recipient, bytes calldata data)
         external
-        lock
-        validatePosition(positionId)
+        requirePosition(positionId)
+        requireOwnerOrOperator(ownerOf(positionId))
         requireNonZeroAddress(recipient)
     {
-        //TODO:
+        _updateInterestCumulative();
+        address pud = s_pud;
+        Position storage s_position = s_positions[positionId];
+        uint256 debt = s_position.getDebt(s_interestCumulativeUDx18);
+        (uint256 value, uint256 margin) = getAppraisalOf(positionId);
+        require(value < debt + margin, "Bookkeeper: sufficient equity to meet margin requirement");
+
+        uint256 principal = s_position.getPrincipal();
+        uint256 penalty = mulDiv18(debt, s_REGISTRAR.getPenaltyRate());
+        uint256 pudBalance = s_position.fungibleBalances[pud];
+        bool isUnderwater = value <= principal + penalty;
+        uint256 pudNeeded = isUnderwater ? principal : value - penalty;
+        uint256 shortfall = pudNeeded > pudBalance ? pudNeeded - pudBalance : 0;
+        if (Address.isContract(_msgSender())) {
+            ILiquidateCallback(_msgSender()).liquidateCallback(positionId, shortfall, data);
+        }
+        require(s_position.fungibleBalances[pud] >= pudNeeded, "Bookkeeper: insufficient PUD");
+
+        _withdrawFungible(s_position, pud, pudNeeded);
+        IPUD(pud).burn(principal);
+
+        if (!isUnderwater) {
+            _allotInterest(Math.min(value - principal - penalty, debt - principal), s_position.originator);
+
+            if (value > debt + penalty) {
+                IERC20(pud).safeTransfer(ownerOf(positionId), value - debt - penalty);
+            }
+        }
+
+        _transferAssets(s_position, recipient);
+
+        (uint256 realDebt,) = s_position.removeDebt(debt, s_interestCumulativeUDx18, s_REGISTRAR.getRepaymentMode());
+        s_totalRealDebt -= realDebt;
+
+        emit Liquidate(_msgSender(), positionId, principal, 0, penalty, 0, recipient);
     }
 
-    function onERC721Received(
-        address, /* operator */
-        address, /* from */
-        uint256, /* tokenId */
-        bytes calldata /* data */
-    ) external view validateToken(_msgSender(), TokenType.NonFungible) returns (bytes4 identifier) {
-        identifier = this.onERC721Received.selector;
-    }
-
-    function getTotalDebt() external view returns (uint256 totalDebt) {
+    function getTotalDebt() public view returns (uint256 totalDebt) {
         totalDebt = mulDiv18(s_totalRealDebt, _getInterestCumulative());
     }
 
     function getDebtOf(uint256 positionId) public view returns (uint256 debt) {
-        debt = mulDiv18(s_positions[positionId].realDebt, _getInterestCumulative());
+        debt = s_positions[positionId].getDebt(_getInterestCumulative());
     }
 
     function getAppraisalOf(uint256 positionId) public view returns (uint256 value, uint256 margin) {
-        (address[] memory fungibleTokens, uint256[] memory fungibleTokenBalances) = getFungibleTokensOf(positionId);
-        (uint256[] memory fungibleTokenValues, uint256[] memory fungibleTokenMargins) =
-            ITreasurer(s_treasurer).getAppraisalOfFungibleTokens(fungibleTokens, fungibleTokenBalances);
+        ITreasurer treasurer = ITreasurer(s_treasurer);
+        (address[] memory fungibles, uint256[] memory balances) = getFungiblesOf(positionId);
+        (uint256 fungiblesValue, uint256 fungiblesMargin) = treasurer.getAppraisalOfFungibles(fungibles, balances);
+        (address[] memory nonFungibles, uint256[] memory tokenIds) = getNonFungiblesOf(positionId);
+        (uint256 nonFungiblesValue, uint256 nonFungiblesMargine) =
+            treasurer.getAppraisalOfNonFungibles(nonFungibles, tokenIds);
 
-        for (uint256 i = 0; i < fungibleTokenValues.length; i++) {
-            value += fungibleTokenValues[i];
-            margin += fungibleTokenMargins[i];
-        }
-
-        (address[] memory nonFungibleTokens, uint256[] memory nonFungibleTokenIds) = getNonFungibleTokensOf(positionId);
-
-        for (uint256 i = 0; i < nonFungibleTokens.length; i++) {
-            (, uint256[] memory nonFungibleTokenValues, uint256[] memory nonFungibleTokenMargins) =
-                ITreasurer(s_treasurer).getAppraisalOfNonFungibleToken(nonFungibleTokens[i], nonFungibleTokenIds[i]);
-
-            for (uint256 j = 0; j < nonFungibleTokenValues.length; j++) {
-                value += nonFungibleTokenValues[j];
-                margin += nonFungibleTokenMargins[j];
-            }
-        }
+        value = fungiblesValue + nonFungiblesValue;
+        margin = fungiblesMargin + nonFungiblesMargine;
     }
 
-    function getFungibleTokensOf(uint256 positionId)
+    function getFungiblesOf(uint256 positionId)
         public
         view
         returns (address[] memory tokens, uint256[] memory balances)
     {
-        Position storage s_position = s_positions[positionId];
-        tokens = s_position.fungibleTokens;
-        balances = new uint256[](tokens.length);
-
-        for (uint256 i = 0; i < tokens.length; i++) {
-            balances[i] = s_position.fungibleTokenBalances[tokens[i]];
-        }
+        (tokens, balances) = s_positions[positionId].getFungibles();
     }
 
-    function getNonFungibleTokensOf(uint256 positionId)
+    function getNonFungiblesOf(uint256 positionId)
         public
         view
         returns (address[] memory tokens, uint256[] memory tokenIds)
     {
-        uint256 size;
-        Position storage s_position = s_positions[positionId];
-        address[] memory _tokens = s_position.nonFungibleTokens;
-
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            size += s_position.nonFungibleTokenIds[_tokens[i]].length;
-        }
-
-        tokens = new address[](size);
-        tokenIds = new uint256[](size);
-        size = 0;
-
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            uint256[] memory _tokenIds = s_position.nonFungibleTokenIds[_tokens[i]];
-
-            for (uint256 j = 0; j < _tokenIds.length; j++) {
-                tokens[size] = _tokens[i];
-                tokenIds[size++] = _tokenIds[j];
-            }
-        }
+        (tokens, tokenIds) = s_positions[positionId].getNonFungibles();
     }
 
-    function _debitFungibleToken(Position storage s_position, address token) private returns (uint256 amount) {
-        uint256 totalBalance = s_totalFungibleTokenBalances[token];
+    function onERC721Received(address, /*operator*/ address, /*from*/ uint256, /*tokenId*/ bytes calldata /*data*/ )
+        external
+        view
+        requireToken(_msgSender(), TokenType.NonFungible)
+        returns (bytes4 identifier)
+    {
+        identifier = this.onERC721Received.selector;
+    }
+
+    function _depositFungible(Position storage s_position, address token) private returns (uint256 amount) {
+        uint256 totalBalance = s_totalFungibleBalances[token];
         amount = IERC20(token).balanceOf(address(this)) - totalBalance;
         require(amount > 0, "Bookkeeper: fungible token deposit not received");
 
-        s_position.addFungibleToken(token, amount);
-        s_totalFungibleTokenBalances[token] = totalBalance + amount;
+        s_position.addFungible(token, amount);
+        s_totalFungibleBalances[token] = totalBalance + amount;
     }
 
-    function _creditFungibleToken(Position storage s_position, address token, uint256 amount) private {
-        require(s_position.fungibleTokenBalances[token] >= amount, "Bookkeeper: insufficient token balance");
-
-        s_position.removeFungibleToken(token, amount);
-        s_totalFungibleTokenBalances[token] -= amount;
+    function _withdrawFungible(Position storage s_position, address token, uint256 amount) private {
+        s_position.removeFungible(token, amount);
+        s_totalFungibleBalances[token] -= amount;
     }
 
-    function _distributeInterest(uint256 amount, address originator) private {
+    function _withdrawNonFungible(Position storage s_position, address token, uint256 tokenId) private {
+        s_position.removeNonFungible(token, tokenId);
+        delete s_nonFungiblePositionIds[token][tokenId];
+    }
+
+    function _transferAssets(Position storage s_position, address recipient) private {
+        uint256 fungiblesLength = s_position.fungibles.length;
+        for (uint256 i = 0; i < fungiblesLength; i++) {
+            address fungible = s_position.fungibles[0]; // always work on the first position as the array is being modified
+            uint256 amount = s_position.fungibleBalances[fungible];
+            _withdrawFungible(s_position, fungible, amount);
+            IERC20(fungible).safeTransfer(recipient, amount);
+        }
+
+        uint256 nonFungiblesLength = s_position.nonFungibles.length;
+        for (uint256 i = 0; i < nonFungiblesLength; i++) {
+            address nonFungible = s_position.nonFungibles[0]; // always work on the first position as the array is being modified
+            uint256 nonFungibleIdsLength = s_position.nonFungibleIds[nonFungible].length;
+            for (uint256 j = 0; j < nonFungibleIdsLength; j++) {
+                uint256 nonFungibleId = s_position.nonFungibleIds[nonFungible][0];
+                _withdrawNonFungible(s_position, nonFungible, nonFungibleId); // always work on the first position as the array is being modified
+                IERC721(nonFungible).safeTransferFrom(address(this), recipient, nonFungibleId);
+            }
+        }
+    }
+
+    function _allotInterest(uint256 amount, address originator) private {
         address pud = s_pud;
-        uint256 totalDistributedAmount;
-        (address[] memory addresses, uint256[] memory ratesUDx18) = s_REGISTRAR.getDistributionRates();
+        uint256 allotedAmount;
+        (address[] memory addresses, uint256[] memory ratesUDx18) = s_REGISTRAR.getAllotmentRates();
 
         for (uint256 i = 0; i < addresses.length; i++) {
             if (addresses[i] != address(0)) {
-                uint256 amountToDistribute = mulDiv18(amount, ratesUDx18[i]);
-                IERC20(pud).safeTransfer(addresses[i], amountToDistribute);
-                totalDistributedAmount += amountToDistribute;
+                uint256 proportion = mulDiv18(amount, ratesUDx18[i]);
+                IERC20(pud).safeTransfer(addresses[i], proportion);
+                allotedAmount += proportion;
             }
         }
-        IERC20(pud).safeTransfer(originator, amount - totalDistributedAmount);
+        IERC20(pud).safeTransfer(originator, amount - allotedAmount);
     }
 
-    function _updateInterestCumulative() private returns (uint256 interestCumulativeUDx18) {
-        interestCumulativeUDx18 = _getInterestCumulative();
-        s_interestCumulativeUDx18 = interestCumulativeUDx18;
-        s_lastBlockTimestamp = block.timestamp;
+    function _updateInterestCumulative() private {
+        uint256 timeElapsed = block.timestamp - s_lastBlockTimestamp;
+        if (timeElapsed > 0) {
+            s_interestCumulativeUDx18 = _calculateInterestCumulative(timeElapsed);
+            s_lastBlockTimestamp = block.timestamp;
+        }
     }
 
     function _getInterestCumulative() private view returns (uint256 interestCumulativeUDx18) {
         uint256 timeElapsed = block.timestamp - s_lastBlockTimestamp;
 
-        if (timeElapsed == 0) {
-            interestCumulativeUDx18 = s_interestCumulativeUDx18;
+        interestCumulativeUDx18 =
+            timeElapsed == 0 ? s_interestCumulativeUDx18 : _calculateInterestCumulative(timeElapsed);
+    }
+
+    function _calculateInterestCumulative(uint256 timeElapsed) private view returns (uint256 interestCumulativeUDx18) {
+        IRegistrar registrar = s_REGISTRAR;
+        UD60x18 effectiveRate;
+        UD60x18 baseRate = wrap(registrar.getInterestRate());
+        RegressionMode regressionMode = registrar.getRegressionMode();
+
+        if (regressionMode == RegressionMode.None) {
+            effectiveRate = add(UNIT, baseRate);
         } else {
-            IRegistrar registrar = s_REGISTRAR;
-            UD60x18 effectiveRate;
-            UD60x18 interestRate = wrap(registrar.getInterestRate());
-            AccelerationMode accelerationMode = registrar.getAccelerationMode();
+            (uint256 accelerator,) = ITreasurer(s_treasurer).getAppraisalOfFungible(registrar.getPricePeg(), uUNIT);
 
-            if (accelerationMode == AccelerationMode.None) {
-                effectiveRate = add(UNIT, interestRate);
+            if (regressionMode == RegressionMode.Linear) {
+                effectiveRate = add(UNIT, mul(baseRate, wrap(accelerator)));
+            } else if (regressionMode == RegressionMode.Quadratic) {
+                effectiveRate = add(UNIT, mul(baseRate, powu(wrap(accelerator), 2)));
+            } else if (regressionMode == RegressionMode.Cubic) {
+                effectiveRate = add(UNIT, mul(baseRate, powu(wrap(accelerator), 3)));
             } else {
-                (uint256 accelerator,) =
-                    ITreasurer(s_treasurer).getAppraisalOfFungibleToken(registrar.getPricePeg(), uUNIT);
-
-                if (accelerationMode == AccelerationMode.Linear) {
-                    effectiveRate = add(UNIT, mul(interestRate, wrap(accelerator)));
-                } else if (accelerationMode == AccelerationMode.Quadratic) {
-                    effectiveRate = add(UNIT, mul(interestRate, powu(wrap(accelerator), 2)));
-                } else if (accelerationMode == AccelerationMode.Cubic) {
-                    effectiveRate = add(UNIT, mul(interestRate, powu(wrap(accelerator), 3)));
-                } else {
-                    revert("Bookkeeper: invalid acceleration mode");
-                }
+                revert("Bookkeeper: invalid acceleration mode");
             }
-
-            interestCumulativeUDx18 = mulDiv18(s_interestCumulativeUDx18, unwrap(powu(effectiveRate, timeElapsed)));
         }
+
+        interestCumulativeUDx18 = mulDiv18(s_interestCumulativeUDx18, unwrap(powu(effectiveRate, timeElapsed)));
     }
 }

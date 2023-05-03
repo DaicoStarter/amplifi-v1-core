@@ -17,14 +17,15 @@ contract PUD is IPUD, ERC20 {
 
     constructor(string memory name, string memory symbol, address registrar) ERC20(name, symbol) {
         s_REGISTRAR = IRegistrar(registrar);
-        s_REGISTRAR.setPUD(address(this));
+        IRegistrar(registrar).setPUD(address(this));
     }
 
     function initialize() external {
         require(s_bookkeeper == address(0) && s_treasurer == address(0), "PUD: already initialized");
 
-        s_bookkeeper = s_REGISTRAR.getBookkeeper();
-        s_treasurer = s_REGISTRAR.getTreasurer();
+        IRegistrar registrar = s_REGISTRAR;
+        s_bookkeeper = registrar.getBookkeeper();
+        s_treasurer = registrar.getTreasurer();
     }
 
     function mint(uint256 amount) external requireBookkeeperOrTreasurer {
