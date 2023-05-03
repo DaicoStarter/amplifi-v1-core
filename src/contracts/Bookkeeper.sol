@@ -42,16 +42,6 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     mapping(address => uint256) private s_totalFungibleBalances;
     mapping(address => mapping(uint256 => uint256)) private s_nonFungiblePositionIds;
 
-    modifier requirePosition(uint256 positionId) {
-        require(_exists(positionId), "Bookkeeper: position does not exist");
-        _;
-    }
-
-    modifier requireOwnerOrOperator(address owner) {
-        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator");
-        _;
-    }
-
     modifier requireToken(address token, TokenType type_) {
         TokenInfo memory tokenInfo = s_REGISTRAR.getTokenInfoOf(token);
         require(tokenInfo.enabled, "Bookkeeper: token is not enabled");
@@ -94,21 +84,20 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         s_interestCumulativeUDx18 = uUNIT;
     }
 
-    function mint(address originator, address recipient)
-        external
-        requireOwnerOrOperator(recipient)
-        returns (uint256 positionId)
-    {
+    function mint(address originator, address recipient) external returns (uint256 positionId) {
+        address owner = ownerOf(positionId);
+        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator");
+
         positionId = ++s_lastPositionId;
         _safeMint(recipient, positionId);
         s_positions[positionId].originator = originator;
     }
 
-    function burn(uint256 positionId)
-        external
-        requirePosition(positionId)
-        requireOwnerOrOperator(ownerOf(positionId))
-    {
+    function burn(uint256 positionId) external {
+        address owner = ownerOf(positionId);
+        require(_exists(positionId), "Bookkeeper: position does not exist");
+        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator");
+
         Position storage s_position = s_positions[positionId];
         require(!s_position.hasAsset(), "Bookkeeper: cannot burn position with asset");
         require(!s_position.hasDebt(), "Bookkeeper: cannot burn position with debt");
@@ -119,10 +108,11 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
 
     function depositFungible(uint256 positionId, address token)
         external
-        requirePosition(positionId)
         requireToken(token, TokenType.Fungible)
         returns (uint256 amount)
     {
+        require(_exists(positionId), "Bookkeeper: position does not exist");
+
         amount = _depositFungible(s_positions[positionId], token);
 
         emit DepositFungible(_msgSender(), positionId, token, amount);
@@ -130,9 +120,9 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
 
     function depositNonFungible(uint256 positionId, address token, uint256 tokenId)
         external
-        requirePosition(positionId)
         requireToken(token, TokenType.NonFungible)
     {
+        require(_exists(positionId), "Bookkeeper: position does not exist");
         require(IERC721(token).ownerOf(tokenId) == address(this), "Bookkeeper: non-fungible token deposit not received");
         require(s_nonFungiblePositionIds[token][tokenId] == 0, "Bookkeeper: non-fungible token already deposited");
 
@@ -145,13 +135,15 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     function withdrawFungible(uint256 positionId, address token, uint256 amount, address recipient, bytes calldata data)
         external
         requireUnlocked
-        requirePosition(positionId)
-        requireOwnerOrOperator(ownerOf(positionId))
         requireToken(token, TokenType.Fungible)
         requireNonZeroAddress(recipient)
         ensurePosition(positionId)
         returns (bytes memory callbackResult)
     {
+        address owner = ownerOf(positionId);
+        require(_exists(positionId), "Bookkeeper: position does not exist");
+        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator");
+
         _withdrawFungible(s_positions[positionId], token, amount);
         IERC20(token).safeTransfer(recipient, amount);
         if (Address.isContract(_msgSender())) {
@@ -172,19 +164,27 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     )
         external
         requireUnlocked
-        requirePosition(positionId)
-        requireOwnerOrOperator(ownerOf(positionId))
         requireTokens(tokens, TokenType.Fungible)
-        requireNonZeroAddress(recipient)
         ensurePosition(positionId)
         returns (bytes memory callbackResult)
     {
+        {
+            address owner = ownerOf(positionId);
+            require(_exists(positionId), "Bookkeeper: position does not exist");
+            require(
+                _msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator"
+            );
+            require(recipient != address(0), "Addressable: require non-zero address");
+        }
+
         Position storage s_position = s_positions[positionId];
         require(tokens.length == amounts.length, "Bookkeeper: tokens and amounts have different length");
 
         for (uint256 i = 0; i < tokens.length; i++) {
-            _withdrawFungible(s_position, tokens[i], amounts[i]);
-            IERC20(tokens[i]).safeTransfer(recipient, amounts[i]);
+            address fungible = tokens[i];
+            uint256 amount = amounts[i];
+            _withdrawFungible(s_position, fungible, amount);
+            IERC20(fungible).safeTransfer(recipient, amount);
         }
         if (Address.isContract(_msgSender())) {
             callbackResult = IWithdrawFungiblesCallback(_msgSender()).withdrawFungiblesCallback(
@@ -204,13 +204,15 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     )
         external
         requireUnlocked
-        requirePosition(positionId)
-        requireOwnerOrOperator(ownerOf(positionId))
         requireToken(token, TokenType.NonFungible)
         requireNonZeroAddress(recipient)
         ensurePosition(positionId)
         returns (bytes memory callbackResult)
     {
+        address owner = ownerOf(positionId);
+        require(_exists(positionId), "Bookkeeper: position does not exist");
+        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator");
+
         _withdrawNonFungible(s_positions[positionId], token, tokenId);
         IERC721(token).safeTransferFrom(address(this), recipient, tokenId);
         if (Address.isContract(_msgSender())) {
@@ -225,10 +227,12 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     function borrow(uint256 positionId, uint256 amount, bytes calldata data)
         external
         requireUnlocked
-        requirePosition(positionId)
-        requireOwnerOrOperator(ownerOf(positionId))
         ensurePosition(positionId)
     {
+        address owner = ownerOf(positionId);
+        require(_exists(positionId), "Bookkeeper: position does not exist");
+        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator");
+
         address pud = s_pud;
         Position storage s_position = s_positions[positionId];
         require(amount > 0, "Bookkeeper: borrow amount must be greater than zero");
@@ -244,11 +248,11 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         emit Borrow(_msgSender(), positionId, amount);
     }
 
-    function repay(uint256 positionId, uint256 amount)
-        external
-        requirePosition(positionId)
-        requireOwnerOrOperator(ownerOf(positionId))
-    {
+    function repay(uint256 positionId, uint256 amount) external {
+        address owner = ownerOf(positionId);
+        require(_exists(positionId), "Bookkeeper: position does not exist");
+        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator");
+
         _updateInterestCumulative();
         address pud = s_pud;
         Position storage s_position = s_positions[positionId];
@@ -267,34 +271,38 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         emit Repay(_msgSender(), positionId, amount - interest, interest);
     }
 
-    function liquidate(uint256 positionId, address recipient, bytes calldata data)
-        external
-        requirePosition(positionId)
-        requireOwnerOrOperator(ownerOf(positionId))
-        requireNonZeroAddress(recipient)
-    {
+    function liquidate(uint256 positionId, address recipient, bytes calldata data) external {
+        require(_exists(positionId), "Bookkeeper: position does not exist");
+        require(recipient != address(0), "Addressable: require non-zero address");
+
         _updateInterestCumulative();
         address pud = s_pud;
         Position storage s_position = s_positions[positionId];
         uint256 debt = s_position.getDebt(s_interestCumulativeUDx18);
-        (uint256 value, uint256 margin) = getAppraisalOf(positionId);
-        require(value < debt + margin, "Bookkeeper: sufficient equity to meet margin requirement");
+        uint256 value;
+        {
+            uint256 margin;
+            (value, margin) = getAppraisalOf(positionId);
+            require(value < debt + margin, "Bookkeeper: sufficient equity to meet margin requirement");
+        }
 
         uint256 principal = s_position.getPrincipal();
         uint256 penalty = mulDiv18(debt, s_REGISTRAR.getPenaltyRate());
-        uint256 pudBalance = s_position.fungibleBalances[pud];
-        bool isUnderwater = value <= principal + penalty;
-        uint256 pudNeeded = isUnderwater ? principal : value - penalty;
-        uint256 shortfall = pudNeeded > pudBalance ? pudNeeded - pudBalance : 0;
-        if (Address.isContract(_msgSender())) {
-            ILiquidateCallback(_msgSender()).liquidateCallback(positionId, shortfall, data);
-        }
-        require(s_position.fungibleBalances[pud] >= pudNeeded, "Bookkeeper: insufficient PUD");
+        {
+            uint256 pudNeeded = value <= principal + penalty ? principal : value - penalty;
+            uint256 pudBalance = s_position.fungibleBalances[pud];
+            if (Address.isContract(_msgSender())) {
+                ILiquidateCallback(_msgSender()).liquidateCallback(
+                    positionId, pudNeeded > pudBalance ? pudNeeded - pudBalance : 0, data
+                );
+            }
+            require(s_position.fungibleBalances[pud] >= pudNeeded, "Bookkeeper: insufficient PUD");
 
-        _withdrawFungible(s_position, pud, pudNeeded);
+            _withdrawFungible(s_position, pud, pudNeeded);
+        }
         IPUD(pud).burn(principal);
 
-        if (!isUnderwater) {
+        if (value > principal + penalty) {
             _allotInterest(Math.min(value - principal - penalty, debt - principal), s_position.originator);
 
             if (value > debt + penalty) {
@@ -304,10 +312,12 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
 
         _transferAssets(s_position, recipient);
 
-        (uint256 realDebt,) = s_position.removeDebt(debt, s_interestCumulativeUDx18, s_REGISTRAR.getRepaymentMode());
-        s_totalRealDebt -= realDebt;
+        {
+            (uint256 realDebt,) = s_position.removeDebt(debt, s_interestCumulativeUDx18, s_REGISTRAR.getRepaymentMode());
+            s_totalRealDebt -= realDebt;
+        }
 
-        emit Liquidate(_msgSender(), positionId, principal, 0, penalty, 0, recipient);
+        emit Liquidate(_msgSender(), positionId, principal, 0, penalty, 0, recipient); //TODO: interest & equity
     }
 
     function getTotalDebt() public view returns (uint256 totalDebt) {
