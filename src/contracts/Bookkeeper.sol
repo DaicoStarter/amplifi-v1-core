@@ -40,7 +40,7 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     uint256 private s_lastPositionId;
     mapping(uint256 => Position) private s_positions;
     mapping(address => uint256) private s_totalFungibleBalances;
-    mapping(address => mapping(uint256 => uint256)) private s_nonFungiblePositionIds;
+    mapping(address => mapping(uint256 => uint256)) private s_nonFungiblePositions;
 
     modifier requireToken(address token, TokenType type_) {
         TokenInfo memory tokenInfo = s_REGISTRAR.getTokenInfoOf(token);
@@ -118,18 +118,18 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         emit DepositFungible(_msgSender(), positionId, token, amount);
     }
 
-    function depositNonFungible(uint256 positionId, address token, uint256 tokenId)
+    function depositNonFungible(uint256 positionId, address token, uint256 item)
         external
         requireToken(token, TokenType.NonFungible)
     {
         require(_exists(positionId), "Bookkeeper: position does not exist");
-        require(IERC721(token).ownerOf(tokenId) == address(this), "Bookkeeper: non-fungible token deposit not received");
-        require(s_nonFungiblePositionIds[token][tokenId] == 0, "Bookkeeper: non-fungible token already deposited");
+        require(IERC721(token).ownerOf(item) == address(this), "Bookkeeper: non-fungible token deposit not received");
+        require(s_nonFungiblePositions[token][item] == 0, "Bookkeeper: non-fungible token already deposited");
 
-        s_positions[positionId].addNonFungible(token, tokenId);
-        s_nonFungiblePositionIds[token][tokenId] = positionId;
+        s_positions[positionId].addNonFungible(token, item);
+        s_nonFungiblePositions[token][item] = positionId;
 
-        emit DepositNonFungible(_msgSender(), positionId, token, tokenId);
+        emit DepositNonFungible(_msgSender(), positionId, token, item);
     }
 
     function withdrawFungible(uint256 positionId, address token, uint256 amount, address recipient, bytes calldata data)
@@ -198,7 +198,7 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     function withdrawNonFungible(
         uint256 positionId,
         address token,
-        uint256 tokenId,
+        uint256 item,
         address recipient,
         bytes calldata data
     )
@@ -213,15 +213,15 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         require(_exists(positionId), "Bookkeeper: position does not exist");
         require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator");
 
-        _withdrawNonFungible(s_positions[positionId], token, tokenId);
-        IERC721(token).safeTransferFrom(address(this), recipient, tokenId);
+        _withdrawNonFungible(s_positions[positionId], token, item);
+        IERC721(token).safeTransferFrom(address(this), recipient, item);
         if (Address.isContract(_msgSender())) {
             callbackResult = IWithdrawNonFungibleCallback(_msgSender()).withdrawNonFungibleCallback(
-                positionId, token, tokenId, recipient, data
+                positionId, token, item, recipient, data
             );
         }
 
-        emit WithdrawNonFungible(_msgSender(), positionId, token, tokenId, recipient);
+        emit WithdrawNonFungible(_msgSender(), positionId, token, item, recipient);
     }
 
     function borrow(uint256 positionId, uint256 amount, bytes calldata data)
@@ -332,9 +332,9 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         ITreasurer treasurer = ITreasurer(s_treasurer);
         (address[] memory fungibles, uint256[] memory balances) = getFungiblesOf(positionId);
         (uint256 fungiblesValue, uint256 fungiblesMargin) = treasurer.getAppraisalOfFungibles(fungibles, balances);
-        (address[] memory nonFungibles, uint256[] memory tokenIds) = getNonFungiblesOf(positionId);
+        (address[] memory nonFungibles, uint256[] memory items) = getNonFungiblesOf(positionId);
         (uint256 nonFungiblesValue, uint256 nonFungiblesMargine) =
-            treasurer.getAppraisalOfNonFungibles(nonFungibles, tokenIds);
+            treasurer.getAppraisalOfNonFungibles(nonFungibles, items);
 
         value = fungiblesValue + nonFungiblesValue;
         margin = fungiblesMargin + nonFungiblesMargine;
@@ -351,12 +351,12 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     function getNonFungiblesOf(uint256 positionId)
         public
         view
-        returns (address[] memory tokens, uint256[] memory tokenIds)
+        returns (address[] memory tokens, uint256[] memory items)
     {
-        (tokens, tokenIds) = s_positions[positionId].getNonFungibles();
+        (tokens, items) = s_positions[positionId].getNonFungibles();
     }
 
-    function onERC721Received(address, /*operator*/ address, /*from*/ uint256, /*tokenId*/ bytes calldata /*data*/ )
+    function onERC721Received(address, /*operator*/ address, /*from*/ uint256, /*item*/ bytes calldata /*data*/ )
         external
         view
         requireToken(_msgSender(), TokenType.NonFungible)
@@ -379,9 +379,9 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         s_totalFungibleBalances[token] -= amount;
     }
 
-    function _withdrawNonFungible(Position storage s_position, address token, uint256 tokenId) private {
-        s_position.removeNonFungible(token, tokenId);
-        delete s_nonFungiblePositionIds[token][tokenId];
+    function _withdrawNonFungible(Position storage s_position, address token, uint256 item) private {
+        s_position.removeNonFungible(token, item);
+        delete s_nonFungiblePositions[token][item];
     }
 
     function _transferAssets(Position storage s_position, address recipient) private {
@@ -396,11 +396,11 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
         uint256 nonFungiblesLength = s_position.nonFungibles.length;
         for (uint256 i = 0; i < nonFungiblesLength; i++) {
             address nonFungible = s_position.nonFungibles[0]; // always work on the first position as the array is being modified
-            uint256 nonFungibleIdsLength = s_position.nonFungibleIds[nonFungible].length;
-            for (uint256 j = 0; j < nonFungibleIdsLength; j++) {
-                uint256 nonFungibleId = s_position.nonFungibleIds[nonFungible][0];
-                _withdrawNonFungible(s_position, nonFungible, nonFungibleId); // always work on the first position as the array is being modified
-                IERC721(nonFungible).safeTransferFrom(address(this), recipient, nonFungibleId);
+            uint256 nonFungibleItemsLength = s_position.nonFungibleItems[nonFungible].length;
+            for (uint256 j = 0; j < nonFungibleItemsLength; j++) {
+                uint256 nonFungibleItem = s_position.nonFungibleItems[nonFungible][0];
+                _withdrawNonFungible(s_position, nonFungible, nonFungibleItem); // always work on the first position as the array is being modified
+                IERC721(nonFungible).safeTransferFrom(address(this), recipient, nonFungibleItem);
             }
         }
     }

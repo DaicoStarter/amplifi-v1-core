@@ -8,5 +8,5 @@ struct Position {
     address[] fungibles;
     mapping(address => uint256) fungibleBalances;
     address[] nonFungibles;
-    mapping(address => uint256[]) nonFungibleIds;
+    mapping(address => uint256[]) nonFungibleItems;
 }

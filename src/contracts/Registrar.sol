@@ -7,9 +7,12 @@ import {RegressionMode} from "amplifi-v1-common/models/RegressionMode.sol";
 import {RepaymentMode} from "amplifi-v1-common/models/RepaymentMode.sol";
 import {TokenInfo} from "amplifi-v1-common/models/TokenInfo.sol";
 import {Addressable} from "amplifi-v1-common/utils/Addressable.sol";
+import {ArrayHelper} from "amplifi-v1-common/utils/ArrayHelper.sol";
 import {Stewardable} from "amplifi-v1-common/utils/Stewardable.sol";
 
 contract Registrar is IRegistrar, Addressable, Stewardable {
+    using ArrayHelper for address[];
+
     address private immutable s_PRICE_PEG;
     address private s_bookkeeper;
     address private s_pud;
@@ -20,6 +23,7 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
     uint256[] private s_allotmentRatesUDx18;
     RegressionMode private s_regressionMode;
     RepaymentMode private s_repaymentMode;
+    address[] private s_tokens;
     mapping(address => TokenInfo) private s_tokenInfos;
 
     constructor(address steward, address pricePeg) Stewardable(steward) {
@@ -76,6 +80,9 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
         require(tokenInfo.marginRatioUDx18 < uUNIT, "Registrar: margin ratio must be [0, 1)");
 
         s_tokenInfos[token] = tokenInfo;
+        if (s_tokens.positionOf(token) < 0) {
+            s_tokens.push(token);
+        }
     }
 
     function getPricePeg() external view returns (address pricePeg) {
@@ -117,6 +124,15 @@ contract Registrar is IRegistrar, Addressable, Stewardable {
 
     function getRepaymentMode() external view returns (RepaymentMode repaymentMode) {
         repaymentMode = s_repaymentMode;
+    }
+
+    function getTokenInfos() external view returns (address[] memory tokens, TokenInfo[] memory tokenInfos) {
+        tokens = s_tokens;
+        tokenInfos = new TokenInfo[](tokens.length);
+
+        for (uint256 i = 0; i < tokens.length; i++) {
+            tokenInfos[i] = s_tokenInfos[tokens[i]];
+        }
     }
 
     function getTokenInfoOf(address token) external view returns (TokenInfo memory tokenInfo) {

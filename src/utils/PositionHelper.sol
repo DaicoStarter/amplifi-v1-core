@@ -21,11 +21,11 @@ library PositionHelper {
         s_self.fungibleBalances[token] = oldBalance + amount;
     }
 
-    function addNonFungible(Position storage s_self, address token, uint256 tokenId) internal {
-        if (s_self.nonFungibleIds[token].length == 0) {
+    function addNonFungible(Position storage s_self, address token, uint256 item) internal {
+        if (s_self.nonFungibleItems[token].length == 0) {
             s_self.nonFungibles.push(token);
         }
-        s_self.nonFungibleIds[token].push(tokenId);
+        s_self.nonFungibleItems[token].push(item);
     }
 
     function addDebt(Position storage s_self, uint256 nominalAmount, uint256 interestCumulativeUDx18)
@@ -46,9 +46,9 @@ library PositionHelper {
         }
     }
 
-    function removeNonFungible(Position storage s_self, address token, uint256 tokenId) internal {
-        s_self.nonFungibleIds[token].remove(tokenId);
-        if (s_self.nonFungibleIds[token].length == 0) {
+    function removeNonFungible(Position storage s_self, address token, uint256 item) internal {
+        s_self.nonFungibleItems[token].remove(item);
+        if (s_self.nonFungibleItems[token].length == 0) {
             s_self.nonFungibles.remove(token);
         }
     }
@@ -121,25 +121,25 @@ library PositionHelper {
     function getNonFungibles(Position storage s_self)
         internal
         view
-        returns (address[] memory tokens, uint256[] memory tokenIds)
+        returns (address[] memory tokens, uint256[] memory items)
     {
         uint256 size;
         address[] memory tokens_ = s_self.nonFungibles;
 
         for (uint256 i = 0; i < tokens_.length; i++) {
-            size += s_self.nonFungibleIds[tokens_[i]].length;
+            size += s_self.nonFungibleItems[tokens_[i]].length;
         }
 
         tokens = new address[](size);
-        tokenIds = new uint256[](size);
+        items = new uint256[](size);
         size = 0;
 
         for (uint256 i = 0; i < tokens_.length; i++) {
-            uint256[] memory tokenIds_ = s_self.nonFungibleIds[tokens_[i]];
+            uint256[] memory items_ = s_self.nonFungibleItems[tokens_[i]];
 
-            for (uint256 j = 0; i < tokenIds_.length; j++) {
+            for (uint256 j = 0; i < items_.length; j++) {
                 tokens[size] = tokens_[i];
-                tokenIds[size++] = tokenIds_[j];
+                items[size++] = items_[j];
             }
         }
     }
