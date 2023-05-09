@@ -85,8 +85,10 @@ contract Bookkeeper is IBookkeeper, Addressable, Lockable, ERC721Enumerable {
     }
 
     function mint(address originator, address recipient) external returns (uint256 positionId) {
-        address owner = ownerOf(positionId);
-        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Bookkeeper: require owner or operator");
+        require(
+            _msgSender() == recipient || isApprovedForAll(recipient, _msgSender()),
+            "Bookkeeper: require owner or operator"
+        );
 
         positionId = ++s_lastPositionId;
         _safeMint(recipient, positionId);
